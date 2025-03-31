@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -25,8 +26,8 @@
 
 typedef struct timespec timespec_t;
 
-static const char* const UNITS[] = {"kg", "l", "dkg", "g"};
-static const char* const PRODUCTS[] = {"meat", "herrings", "vinegar", "table vodka", "gelatin"};
+static const char *const UNITS[] = {"kg", "l", "dkg", "g"};
+static const char *const PRODUCTS[] = {"meat", "herrings", "vinegar", "table vodka", "gelatin"};
 
 #define ERR(source) \
     (fprintf(stderr, "%s:%d\n", __FILE__, __LINE__), perror(source), kill(0, SIGKILL), exit(EXIT_FAILURE))
@@ -38,23 +39,30 @@ void msleep(unsigned int milisec)
     timespec_t req = {0};
     req.tv_sec = sec;
     req.tv_nsec = milisec * 1000000L;
-    if (nanosleep(&req, &req))
+    if (-1 == nanosleep(&req, &req) && errno != EINTR)
         ERR("nanosleep");
 }
 
-void register_notification(mqd_t* data);
+void handle_messages(union sigval data) {}
 
-void handle_messages(union sigval data)
+void sethandler(void (*f)(int, siginfo_t *, void *), int sigNo)
 {
-    mqd_t* fd = data.sival_ptr;
-    register_notification(fd);
+    struct sigaction act;
+    memset(&act, 0, sizeof(struct sigaction));
+    act.sa_sigaction = f;
+    act.sa_flags = SA_SIGINFO;
+    if (-1 == sigaction(sigNo, &act, NULL))
+        ERR("sigaction");
+}
 
+void read_queue(mqd_t *fd)
+{
     for (;;)
     {
         char mes[MSG_SIZE];
         unsigned int P;
 
-        if (-1 != mq_receive(*fd, mes, MSG_SIZE, &P))
+        if (-1 != TEMP_FAILURE_RETRY(mq_receive(*fd, mes, MSG_SIZE, &P)))
         {
             // printf("%s? ", mes);
             if (P == 0)
@@ -95,18 +103,18 @@ void handle_messages(union sigval data)
     }
 }
 
-void register_notification(mqd_t* data)
+void mq_handler(int sig, siginfo_t *info, void *p)
 {
-    struct sigevent notification = {};
-    notification.sigev_value.sival_ptr = data;
-    notification.sigev_notify = SIGEV_THREAD;
-    notification.sigev_notify_function = handle_messages;
+    mqd_t *fd = (mqd_t *)info->si_value.sival_ptr;
 
-    int res = mq_notify(*data, &notification);
-
-    // It is EBADF not EBADFD for some reason
-    if (res == -1 && errno != EBADF)
+    static struct sigevent notif;
+    notif.sigev_notify = SIGEV_SIGNAL;
+    notif.sigev_signo = SIGRTMIN;
+    notif.sigev_value.sival_ptr = fd;
+    if (mq_notify(*fd, &notif) < 0)
         ERR("mq_notify");
+
+    read_queue(fd);
 }
 
 void self_checkout_work()
@@ -114,6 +122,17 @@ void self_checkout_work()
     mqd_t qfd;
     if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_RDONLY | O_NONBLOCK)))
         ERR("mq_open");
+
+    sethandler(mq_handler, SIGRTMIN);
+
+    static struct sigevent notif;
+    notif.sigev_notify = SIGEV_SIGNAL;
+    notif.sigev_signo = SIGRTMIN;
+    notif.sigev_value.sival_ptr = &qfd;
+    if (mq_notify(qfd, &notif) < 0)
+        ERR("mq_notify");
+
+    read_queue(&qfd);
 
     srand(getpid());
     if (rand() % 4 == 0)
@@ -124,10 +143,6 @@ void self_checkout_work()
     }
 
     printf("Open today.\n");
-
-    union sigval val;
-    val.sival_ptr = &qfd;
-    handle_messages(val);
 
     for (int i = 0; i < OPEN_FOR; i++)
     {
@@ -154,8 +169,8 @@ void client_work()
 
     for (int i = 0; i < n; i++)
     {
-        int u = rand() % sizeof(UNITS) / sizeof(char*);
-        int p = rand() % sizeof(PRODUCTS) / sizeof(char*);
+        int u = rand() % sizeof(UNITS) / sizeof(char *);
+        int p = rand() % sizeof(PRODUCTS) / sizeof(char *);
         int a = rand() % (MAX_AMOUNT) + 1;
         unsigned int P = rand() % 2;
 
