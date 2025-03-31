@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <asm-generic/errno.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -40,11 +42,77 @@ void msleep(unsigned int milisec)
         ERR("nanosleep");
 }
 
-void self_checkout_work() {}
+void self_checkout_work()
+{
+    mqd_t qfd;
+    if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_RDONLY | O_NONBLOCK)))
+        ERR("mq_open");
+
+    srand(getpid());
+    if (rand() % 4 == 0)
+    {
+        printf("Closed today.\n");
+        mq_close(qfd);
+        exit(EXIT_SUCCESS);
+    }
+
+    printf("Open today.\n");
+
+    for (int i = 0; i < OPEN_FOR; i++)
+    {
+        printf("%d:00\n", START_TIME + i);
+
+        for (;;)
+        {
+            char mes[MSG_SIZE];
+            unsigned int P;
+
+            if (-1 == mq_receive(qfd, mes, MSG_SIZE, &P))
+            {
+                if (errno == EAGAIN)
+                {
+                    break;
+                }
+                ERR("mq_receive");
+            }
+            if (P != 0)
+                printf("Please go to the end of the line!\n");
+            else
+            {
+                switch (rand() % 3)
+                {
+                    case 0:
+                        printf("Come back tomorrow.\n");
+
+                        break;
+                    case 1:
+                        printf("Out of stock\n");
+                        break;
+                    case 2:
+                        printf("There is an item in the packing zone that shouldn’t be there.\n");
+                        break;
+                    default:
+                        break;
+                }
+            }
+            // Technically this should be there but the output looks bad
+            // msleep(100);
+        }
+
+        msleep(200);
+    }
+
+    mq_close(qfd);
+    printf("Store closing.\n");
+    msleep(1000);
+}
 
 void client_work()
 {
     mqd_t qfd;
+    struct mq_attr attributes = {};
+    attributes.mq_maxmsg = MAX_MSG_COUNT;
+    attributes.mq_msgsize = MSG_SIZE;
     if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_WRONLY)))
         ERR("mq_open");
 
@@ -60,7 +128,7 @@ void client_work()
         unsigned int P = rand() % 2;
 
         char mes[MSG_SIZE];
-        snprintf(mes, MSG_SIZE - 1, "%d%s %s", a, UNITS[u], PRODUCTS[p]);
+        snprintf(mes, MSG_SIZE, "%d%s %s", a, UNITS[u], PRODUCTS[p]);
 
         timespec_t time;
         clock_gettime(CLOCK_REALTIME, &time);
@@ -75,6 +143,9 @@ void client_work()
             }
             ERR("mq_timedsend");
         }
+
+        // To make the output better???
+        msleep(1000);
     }
 
     mq_close(qfd);
@@ -99,7 +170,6 @@ void spawn_children()
         {
             msleep(200);
             self_checkout_work();
-            printf("Store closing.\n");
             exit(EXIT_SUCCESS);
         }
 
@@ -117,7 +187,8 @@ int main(void)
     struct mq_attr attributes = {};
     attributes.mq_maxmsg = MAX_MSG_COUNT;
     attributes.mq_msgsize = MSG_SIZE;
-    if (-1 == (shop_queue_fd = mq_open(SHOP_QUEUE_NAME, O_CREAT | O_EXCL | O_RDWR, 0600, attributes)))
+    // Remember about passing an adress to the struct
+    if (-1 == (shop_queue_fd = mq_open(SHOP_QUEUE_NAME, O_CREAT | O_EXCL | O_RDWR, 0600, &attributes)))
         ERR("mq_open");
 
     mq_close(shop_queue_fd);
