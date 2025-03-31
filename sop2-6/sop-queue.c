@@ -24,7 +24,7 @@
 typedef struct timespec timespec_t;
 
 static const char* const UNITS[] = {"kg", "l", "dkg", "g"};
-static const char* const PRODUCTS[] = {"mięsa", "śledzi", "octu", "wódki stołowej", "żelatyny"};
+static const char* const PRODUCTS[] = {"meat", "herrings", "vinegar", "table vodka", "gelatin"};
 
 #define ERR(source) \
     (fprintf(stderr, "%s:%d\n", __FILE__, __LINE__), perror(source), kill(0, SIGKILL), exit(EXIT_FAILURE))
@@ -40,6 +40,46 @@ void msleep(unsigned int milisec)
         ERR("nanosleep");
 }
 
+void self_checkout_work() {}
+
+void client_work()
+{
+    mqd_t qfd;
+    if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_WRONLY)))
+        ERR("mq_open");
+
+    srand(getpid());
+    int n;
+    n = rand() % (MAX_ITEMS - MIN_ITEMS + 1) + MIN_ITEMS;
+
+    for (int i = 0; i < n; i++)
+    {
+        int u = rand() % sizeof(UNITS) / sizeof(char*);
+        int p = rand() % sizeof(PRODUCTS) / sizeof(char*);
+        int a = rand() % (MAX_AMOUNT) + 1;
+        unsigned int P = rand() % 2;
+
+        char mes[MSG_SIZE];
+        snprintf(mes, MSG_SIZE - 1, "%d%s %s", a, UNITS[u], PRODUCTS[p]);
+
+        timespec_t time;
+        clock_gettime(CLOCK_REALTIME, &time);
+        time.tv_sec++;
+
+        if (-1 == mq_timedsend(qfd, mes, MSG_SIZE, P, &time))
+        {
+            if (errno == ETIMEDOUT)
+            {
+                printf("[%d] I will never come here…\n", getpid());
+                break;
+            }
+            ERR("mq_timedsend");
+        }
+    }
+
+    mq_close(qfd);
+}
+
 void spawn_children()
 {
     int res;
@@ -51,13 +91,14 @@ void spawn_children()
 
         if (res == 0 && i > 0)  // Case child (client)
         {
-            printf("[%d] I will never come here…\n", getpid());
+            client_work();
             exit(EXIT_SUCCESS);
         }
 
         if (res == 0 && i == 0)  // Case child (self checkout)
         {
             msleep(200);
+            self_checkout_work();
             printf("Store closing.\n");
             exit(EXIT_SUCCESS);
         }
