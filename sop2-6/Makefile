@@ -1,5 +1,5 @@
 CC=gcc
-C_FLAGS=-Wall -g -Wno-unused
+C_FLAGS=-Wall -g 
 L_FLAGS=-lrt -fsanitize=address,undefined
 
 TARGET=sop-queue

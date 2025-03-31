@@ -42,42 +42,22 @@ void msleep(unsigned int milisec)
         ERR("nanosleep");
 }
 
-void self_checkout_work()
+void register_notification(mqd_t* data);
+
+void handle_messages(union sigval data)
 {
-    mqd_t qfd;
-    if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_RDONLY | O_NONBLOCK)))
-        ERR("mq_open");
+    mqd_t* fd = data.sival_ptr;
+    register_notification(fd);
 
-    srand(getpid());
-    if (rand() % 4 == 0)
+    for (;;)
     {
-        printf("Closed today.\n");
-        mq_close(qfd);
-        exit(EXIT_SUCCESS);
-    }
+        char mes[MSG_SIZE];
+        unsigned int P;
 
-    printf("Open today.\n");
-
-    for (int i = 0; i < OPEN_FOR; i++)
-    {
-        printf("%d:00\n", START_TIME + i);
-
-        for (;;)
+        if (-1 != mq_receive(*fd, mes, MSG_SIZE, &P))
         {
-            char mes[MSG_SIZE];
-            unsigned int P;
-
-            if (-1 == mq_receive(qfd, mes, MSG_SIZE, &P))
-            {
-                if (errno == EAGAIN)
-                {
-                    break;
-                }
-                ERR("mq_receive");
-            }
-            if (P != 0)
-                printf("Please go to the end of the line!\n");
-            else
+            // printf("%s? ", mes);
+            if (P == 0)
             {
                 switch (rand() % 3)
                 {
@@ -95,24 +75,76 @@ void self_checkout_work()
                         break;
                 }
             }
-            // Technically this should be there but the output looks bad
-            // msleep(100);
+            else
+            {
+                printf("Please go to the end of the line!\n");
+            }
+            msleep(100);
         }
+        else
+        {
+            // It is EBADF not EBADFD for some reason
+            if (errno == EAGAIN || errno == EBADF)
+            {
+                break;
+            }
+            ERR("mq_receive");
+        }
+        // Technically this should be there but the output looks bad
+        // msleep(100);
+    }
+}
+
+void register_notification(mqd_t* data)
+{
+    struct sigevent notification = {};
+    notification.sigev_value.sival_ptr = data;
+    notification.sigev_notify = SIGEV_THREAD;
+    notification.sigev_notify_function = handle_messages;
+
+    int res = mq_notify(*data, &notification);
+
+    // It is EBADF not EBADFD for some reason
+    if (res == -1 && errno != EBADF)
+        ERR("mq_notify");
+}
+
+void self_checkout_work()
+{
+    mqd_t qfd;
+    if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_RDONLY | O_NONBLOCK)))
+        ERR("mq_open");
+
+    srand(getpid());
+    if (rand() % 4 == 0)
+    {
+        printf("Closed today.\n");
+        mq_close(qfd);
+        exit(EXIT_SUCCESS);
+    }
+
+    printf("Open today.\n");
+
+    union sigval val;
+    val.sival_ptr = &qfd;
+    handle_messages(val);
+
+    for (int i = 0; i < OPEN_FOR; i++)
+    {
+        printf("%d:00\n", START_TIME + i);
 
         msleep(200);
     }
 
     mq_close(qfd);
     printf("Store closing.\n");
-    msleep(1000);
+    // msleep(1000);
 }
 
 void client_work()
 {
     mqd_t qfd;
-    struct mq_attr attributes = {};
-    attributes.mq_maxmsg = MAX_MSG_COUNT;
-    attributes.mq_msgsize = MSG_SIZE;
+
     if (-1 == (qfd = mq_open(SHOP_QUEUE_NAME, O_WRONLY)))
         ERR("mq_open");
 
@@ -145,7 +177,7 @@ void client_work()
         }
 
         // To make the output better???
-        msleep(1000);
+        // msleep(1000);
     }
 
     mq_close(qfd);
@@ -168,7 +200,7 @@ void spawn_children()
 
         if (res == 0 && i == 0)  // Case child (self checkout)
         {
-            msleep(200);
+            // msleep(200);
             self_checkout_work();
             exit(EXIT_SUCCESS);
         }
